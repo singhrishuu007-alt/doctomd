@@ -24,6 +24,7 @@ RZP_KEY_ID     = os.environ.get("RZP_KEY_ID", "")
 RZP_KEY_SECRET = os.environ.get("RZP_KEY_SECRET", "")
 
 MAX_FREE_MB = 5
+UNLIMITED_PRICE_PAISE = 49900  # ₹499
 
 # Pay-per-file tiers (size in MB → price in paise)
 PAID_TIERS = [
@@ -32,6 +33,10 @@ PAID_TIERS = [
     (200, 4900),   # 50–200 MB → ₹49
 ]
 
+# In-memory store for unlimited tokens (payment_id → True)
+# In production replace with Redis/DB
+unlimited_tokens: set[str] = set()
+
 def get_price(size_mb: float) -> int | None:
     """Returns price in paise for files above free limit, or None if free."""
     if size_mb <= MAX_FREE_MB:
@@ -39,7 +44,7 @@ def get_price(size_mb: float) -> int | None:
     for limit_mb, price_paise in PAID_TIERS:
         if size_mb <= limit_mb:
             return price_paise
-    return PAID_TIERS[-1][1]  # largest tier price for anything bigger
+    return PAID_TIERS[-1][1]
 
 
 def clean_markdown(md: str) -> str:
@@ -145,7 +150,7 @@ def convert_pdf(data: bytes) -> str:
 
 
 @app.post("/convert")
-async def convert(file: UploadFile = File(...), payment_id: str = ""):
+async def convert(file: UploadFile = File(...), payment_id: str = "", unlimited_token: str = ""):
     if not file.filename:
         raise HTTPException(400, "No file provided")
 
@@ -155,9 +160,10 @@ async def convert(file: UploadFile = File(...), payment_id: str = ""):
 
     data = await file.read()
     size_mb = len(data) / (1024 * 1024)
-    price = get_price(size_mb)
 
-    # File needs payment but no payment_id provided
+    is_unlimited = unlimited_token and unlimited_token in unlimited_tokens
+    price = None if is_unlimited else get_price(size_mb)
+
     if price is not None and not payment_id:
         raise HTTPException(402, {
             "message": f"File is {size_mb:.1f} MB — payment required",
@@ -186,6 +192,9 @@ async def convert(file: UploadFile = File(...), payment_id: str = ""):
 class OrderRequest(BaseModel):
     size_mb: float
 
+class UnlimitedOrderRequest(BaseModel):
+    pass
+
 @app.post("/create-order")
 def create_order(body: OrderRequest):
     if not RZP_KEY_ID:
@@ -194,18 +203,23 @@ def create_order(body: OrderRequest):
     if price is None:
         raise HTTPException(400, "File is free, no payment needed")
     client = razorpay.Client(auth=(RZP_KEY_ID, RZP_KEY_SECRET))
-    order = client.order.create({
-        "amount": price,
-        "currency": "INR",
-        "payment_capture": 1,
-    })
-    return JSONResponse({"order_id": order["id"], "amount": price, "key_id": RZP_KEY_ID})
+    order = client.order.create({"amount": price, "currency": "INR", "payment_capture": 1})
+    return JSONResponse({"order_id": order["id"], "amount": price, "key_id": RZP_KEY_ID, "type": "per_file"})
+
+@app.post("/create-unlimited-order")
+def create_unlimited_order():
+    if not RZP_KEY_ID:
+        raise HTTPException(500, "Payment not configured")
+    client = razorpay.Client(auth=(RZP_KEY_ID, RZP_KEY_SECRET))
+    order = client.order.create({"amount": UNLIMITED_PRICE_PAISE, "currency": "INR", "payment_capture": 1})
+    return JSONResponse({"order_id": order["id"], "amount": UNLIMITED_PRICE_PAISE, "key_id": RZP_KEY_ID, "type": "unlimited"})
 
 
 class VerifyRequest(BaseModel):
     razorpay_order_id: str
     razorpay_payment_id: str
     razorpay_signature: str
+    type: str = "per_file"  # "per_file" or "unlimited"
 
 
 @app.post("/verify-payment")
@@ -214,7 +228,13 @@ def verify_payment(body: VerifyRequest):
     expected = hmac.new(RZP_KEY_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
     if expected != body.razorpay_signature:
         raise HTTPException(400, "Payment verification failed")
-    return JSONResponse({"pro": True, "payment_id": body.razorpay_payment_id})
+    if body.type == "unlimited":
+        unlimited_tokens.add(body.razorpay_payment_id)
+    return JSONResponse({"pro": True, "payment_id": body.razorpay_payment_id, "type": body.type})
+
+@app.get("/check-unlimited/{payment_id}")
+def check_unlimited(payment_id: str):
+    return JSONResponse({"valid": payment_id in unlimited_tokens})
 
 
 @app.get("/health")

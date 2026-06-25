@@ -33,20 +33,26 @@ export default function Home() {
   const [dragging, setDragging] = useState(false);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [pendingPrice, setPendingPrice] = useState<{ priceInr: number; label: string } | null>(null);
+  const [unlimitedToken, setUnlimitedToken] = useState("");
+  const [buyingUnlimited, setBuyingUnlimited] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const s = document.createElement("script");
     s.src = "https://checkout.razorpay.com/v1/checkout.js";
     document.body.appendChild(s);
+    // Restore unlimited token
+    const saved = localStorage.getItem("doctomd_unlimited");
+    if (saved) setUnlimitedToken(saved);
   }, []);
 
-  const doConvert = useCallback(async (file: File, paymentId = "") => {
+  const doConvert = useCallback(async (file: File, paymentId = "", token = "") => {
     setStatus("uploading");
     setMarkdown("");
     const form = new FormData();
     form.append("file", file);
     if (paymentId) form.append("payment_id", paymentId);
+    if (token) form.append("unlimited_token", token);
 
     try {
       const res = await fetch(`${API}/convert`, { method: "POST", body: form });
@@ -68,6 +74,11 @@ export default function Home() {
       setStatus("error");
       return;
     }
+    // Unlimited token holders skip payment
+    if (unlimitedToken) {
+      doConvert(file, "", unlimitedToken);
+      return;
+    }
     const tier = getPriceForSize(sizeMb);
     if (tier) {
       setPendingFile(file);
@@ -76,7 +87,7 @@ export default function Home() {
     } else {
       doConvert(file);
     }
-  }, [doConvert]);
+  }, [doConvert, unlimitedToken]);
 
   const handlePay = async () => {
     if (!pendingFile || !pendingPrice) return;
@@ -117,6 +128,40 @@ export default function Home() {
     } catch {
       setError("Could not load payment. Try again.");
       setStatus("error");
+    }
+  };
+
+  const handleBuyUnlimited = async () => {
+    setBuyingUnlimited(true);
+    try {
+      const res = await fetch(`${API}/create-unlimited-order`, { method: "POST" });
+      const order = await res.json();
+      const rzp = new window.Razorpay({
+        key: order.key_id,
+        amount: order.amount,
+        currency: "INR",
+        name: "DocToMD Unlimited",
+        description: "Unlimited conversions, any file size",
+        order_id: order.order_id,
+        handler: async (response: { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string }) => {
+          const verify = await fetch(`${API}/verify-payment`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...response, type: "unlimited" }),
+          });
+          const result = await verify.json();
+          if (result.pro) {
+            setUnlimitedToken(result.payment_id);
+            localStorage.setItem("doctomd_unlimited", result.payment_id);
+          }
+        },
+        theme: { color: "#facc15" },
+      });
+      rzp.open();
+    } catch {
+      alert("Payment failed to load. Try again.");
+    } finally {
+      setBuyingUnlimited(false);
     }
   };
 
@@ -167,15 +212,19 @@ export default function Home() {
           <Zap size={20} className="text-yellow-400" />
           <span className="font-bold text-lg tracking-tight">DocToMD</span>
         </div>
-        <div className="flex items-center gap-3 text-xs text-white/40">
-          <span>Under 5 MB — Free</span>
-          <span>·</span>
-          <span>5–20 MB — ₹10</span>
-          <span>·</span>
-          <span>20–50 MB — ₹20</span>
-          <span>·</span>
-          <span>50–200 MB — ₹49</span>
-        </div>
+        {unlimitedToken ? (
+          <span className="text-xs bg-yellow-400/20 text-yellow-400 px-3 py-1.5 rounded-full font-medium">
+            ✦ Unlimited Active
+          </span>
+        ) : (
+          <button
+            onClick={handleBuyUnlimited}
+            disabled={buyingUnlimited}
+            className="text-sm px-4 py-1.5 rounded-lg bg-yellow-400 text-black font-semibold hover:bg-yellow-300 transition-colors disabled:opacity-50"
+          >
+            {buyingUnlimited ? "Loading…" : "₹499 Unlimited"}
+          </button>
+        )}
       </header>
 
       <div className="max-w-5xl mx-auto px-6 py-12">
@@ -281,12 +330,13 @@ export default function Home() {
         {(status === "idle" || status === "error") && (
           <div className="mt-16">
             <p className="text-center text-white/30 text-sm mb-6">Pricing</p>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
               {[
-                { range: "Under 5 MB", price: "Free", sub: "Always free" },
-                { range: "5 – 20 MB",  price: "₹10",  sub: "per file" },
-                { range: "20 – 50 MB", price: "₹20",  sub: "per file" },
-                { range: "50 – 200 MB",price: "₹49",  sub: "per file" },
+                { range: "Under 5 MB",  price: "Free", sub: "Always free" },
+                { range: "5 – 20 MB",   price: "₹10",  sub: "per file" },
+                { range: "20 – 50 MB",  price: "₹20",  sub: "per file" },
+                { range: "50 – 200 MB", price: "₹49",  sub: "per file" },
+                { range: "Unlimited",   price: "₹499", sub: "any size, forever" },
               ].map(t => (
                 <div key={t.range} className="bg-white/[0.03] border border-white/[0.08] rounded-xl p-4 text-center">
                   <p className="text-white/40 text-xs mb-2">{t.range}</p>
