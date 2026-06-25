@@ -47,9 +47,13 @@ export default function Home() {
     const s = document.createElement("script");
     s.src = "https://checkout.razorpay.com/v1/checkout.js";
     document.body.appendChild(s);
-    // Restore unlimited token
+    // Restore unlimited token (only Razorpay-verified ones, not fake upi_ tokens)
     const saved = localStorage.getItem("doctomd_unlimited");
-    if (saved) setUnlimitedToken(saved);
+    if (saved && !saved.startsWith("upi_")) {
+      setUnlimitedToken(saved);
+    } else if (saved) {
+      localStorage.removeItem("doctomd_unlimited");
+    }
   }, []);
 
   const doConvert = useCallback(async (file: File, paymentId = "", token = "") => {
@@ -63,6 +67,19 @@ export default function Home() {
     try {
       const res = await fetch(`${API}/convert`, { method: "POST", body: form });
       const json = await res.json();
+      if (res.status === 402) {
+        // Token was invalid or expired — clear it and show payment screen
+        setUnlimitedToken("");
+        localStorage.removeItem("doctomd_unlimited");
+        const sizeMb = json.detail?.size_mb || 0;
+        const tier = getPriceForSize(sizeMb) ?? getPriceForSize(file.size / (1024 * 1024));
+        if (tier) {
+          setPendingFile(file);
+          setPendingPrice(tier);
+          setStatus("pay_required");
+        }
+        return;
+      }
       if (!res.ok) throw new Error(json.detail?.message || json.detail || "Conversion failed");
       setMarkdown(json.markdown);
       setStats({ size_mb: json.size_mb, word_count: json.word_count, char_count: json.char_count, filename: json.filename });
