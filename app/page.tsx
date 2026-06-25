@@ -302,52 +302,71 @@ export default function Home() {
           </div>
         )}
 
-        {/* UPI Payment screen — per file */}
+        {/* Payment screen — per file */}
         {(status === "pay_required" || status === "paying") && pendingFile && pendingPrice && (
-          <div className="border border-white/10 rounded-2xl p-8 max-w-md mx-auto space-y-6">
+          <div className="border border-white/10 rounded-2xl p-8 max-w-lg mx-auto space-y-6">
+            {/* File info */}
             <div className="text-center">
               <p className="text-lg font-semibold mb-1">{pendingFile.name}</p>
-              <p className="text-white/40 text-sm">{(pendingFile.size / (1024 * 1024)).toFixed(1)} MB</p>
+              <p className="text-white/40 text-sm">{(pendingFile.size / (1024 * 1024)).toFixed(1)} MB · {pendingPrice.label}</p>
+              <p className="text-3xl font-bold text-yellow-400 mt-2">₹{pendingPrice.priceInr}</p>
             </div>
 
-            {/* QR Code */}
-            <div className="flex flex-col items-center gap-3">
-              <div className="bg-white p-4 rounded-2xl">
-                <QRCodeSVG
-                  value={`upi://pay?pa=${UPI_ID}&pn=${encodeURIComponent(UPI_NAME)}&am=${pendingPrice.priceInr}&cu=INR&tn=${encodeURIComponent(`DocToMD - ${pendingFile.name}`)}`}
-                  size={180}
-                />
-              </div>
-              <p className="text-2xl font-bold text-yellow-400">₹{pendingPrice.priceInr}</p>
-              <p className="text-white/40 text-sm">Scan with GPay · PhonePe · Paytm · any UPI app</p>
-              <p className="text-white/30 text-xs">{UPI_ID}</p>
-            </div>
-
-            {/* UTR input */}
-            <div className="space-y-2">
-              <label className="text-sm text-white/50">After paying, enter UTR / Transaction ID</label>
-              <input
-                type="text"
-                value={utr}
-                onChange={e => { setUtr(e.target.value); setUtrError(""); }}
-                placeholder="e.g. 123456789012"
-                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-yellow-400/50"
-              />
-              {utrError && <p className="text-red-400 text-xs">{utrError}</p>}
-              <p className="text-white/25 text-xs">Find it in GPay → transaction details → UTR number</p>
-            </div>
-
-            <div className="flex gap-3">
+            {/* Option 1 — Razorpay (cards, UPI, netbanking) */}
+            <div className="bg-white/5 border border-white/10 rounded-xl p-5 space-y-3">
+              <p className="text-sm font-medium text-white/70">Option 1 — Pay via Razorpay</p>
+              <p className="text-xs text-white/30">Cards · UPI · Netbanking · Wallets · Auto-verified</p>
               <button
-                onClick={handleUpiPaid}
-                className="flex-1 py-3 bg-yellow-400 text-black font-semibold rounded-xl hover:bg-yellow-300 transition-colors"
+                onClick={handlePay}
+                disabled={status === "paying"}
+                className="w-full py-3 bg-yellow-400 text-black font-semibold rounded-xl hover:bg-yellow-300 transition-colors disabled:opacity-50"
               >
-                I've Paid — Convert Now
-              </button>
-              <button onClick={reset} className="px-5 py-3 bg-white/10 rounded-xl hover:bg-white/20 transition-colors text-white/50">
-                Cancel
+                {status === "paying" ? "Opening…" : `Pay ₹${pendingPrice.priceInr} via Razorpay`}
               </button>
             </div>
+
+            {/* Divider */}
+            <div className="flex items-center gap-3">
+              <div className="flex-1 h-px bg-white/10" />
+              <span className="text-white/20 text-xs">or</span>
+              <div className="flex-1 h-px bg-white/10" />
+            </div>
+
+            {/* Option 2 — UPI QR */}
+            <div className="bg-white/5 border border-white/10 rounded-xl p-5 space-y-4">
+              <p className="text-sm font-medium text-white/70">Option 2 — Scan UPI QR</p>
+              <p className="text-xs text-white/30">GPay · PhonePe · Paytm · any UPI app</p>
+              <div className="flex justify-center">
+                <div className="bg-white p-3 rounded-xl">
+                  <QRCodeSVG
+                    value={`upi://pay?pa=${UPI_ID}&pn=${encodeURIComponent(UPI_NAME)}&am=${pendingPrice.priceInr}&cu=INR&tn=${encodeURIComponent(`DocToMD - ${pendingFile.name}`)}`}
+                    size={150}
+                  />
+                </div>
+              </div>
+              <p className="text-center text-white/30 text-xs">{UPI_ID}</p>
+              <div className="space-y-2">
+                <input
+                  type="text"
+                  value={utr}
+                  onChange={e => { setUtr(e.target.value); setUtrError(""); }}
+                  placeholder="Enter UTR number after paying"
+                  className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-yellow-400/50 text-sm"
+                />
+                {utrError && <p className="text-red-400 text-xs">{utrError}</p>}
+                <p className="text-white/20 text-xs">GPay → transaction → UTR number (12 digits)</p>
+                <button
+                  onClick={handleUpiPaid}
+                  className="w-full py-3 bg-white/10 border border-white/20 text-white font-medium rounded-xl hover:bg-white/20 transition-colors"
+                >
+                  I've Paid via UPI — Convert Now
+                </button>
+              </div>
+            </div>
+
+            <button onClick={reset} className="w-full text-sm text-white/30 hover:text-white/50 transition-colors">
+              Cancel
+            </button>
           </div>
         )}
 
@@ -462,12 +481,27 @@ export default function Home() {
               {utrError && <p className="text-red-400 text-xs">{utrError}</p>}
             </div>
 
+            {/* Razorpay button for unlimited */}
+            <button
+              onClick={handleBuyUnlimited}
+              disabled={buyingUnlimited}
+              className="w-full py-3 bg-yellow-400 text-black font-semibold rounded-xl hover:bg-yellow-300 transition-colors disabled:opacity-50"
+            >
+              {buyingUnlimited ? "Opening…" : "Pay ₹499 via Razorpay (Auto-verified)"}
+            </button>
+
+            <div className="flex items-center gap-3">
+              <div className="flex-1 h-px bg-white/10" />
+              <span className="text-white/20 text-xs">or UPI QR</span>
+              <div className="flex-1 h-px bg-white/10" />
+            </div>
+
             <div className="flex gap-3">
               <button
-                onClick={() => { handleUnlimitedUpiPaid(); setShowUnlimitedQR(false); }}
-                className="flex-1 py-3 bg-yellow-400 text-black font-semibold rounded-xl hover:bg-yellow-300 transition-colors"
+                onClick={() => { handleUnlimitedUpiPaid(); if (utr.trim().length >= 10) setShowUnlimitedQR(false); }}
+                className="flex-1 py-3 bg-white/10 border border-white/20 text-white font-medium rounded-xl hover:bg-white/20 transition-colors"
               >
-                Activate Unlimited
+                I've Paid via UPI — Activate
               </button>
               <button
                 onClick={() => { setShowUnlimitedQR(false); setUtr(""); setUtrError(""); }}
