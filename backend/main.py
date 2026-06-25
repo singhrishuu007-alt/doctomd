@@ -22,10 +22,24 @@ app.add_middleware(
 
 RZP_KEY_ID     = os.environ.get("RZP_KEY_ID", "")
 RZP_KEY_SECRET = os.environ.get("RZP_KEY_SECRET", "")
-PRO_PRICE_PAISE = 29900  # ₹299
 
 MAX_FREE_MB = 5
-MAX_FREE_BYTES = MAX_FREE_MB * 1024 * 1024
+
+# Pay-per-file tiers (size in MB → price in paise)
+PAID_TIERS = [
+    (20,  1000),   # 5–20 MB  → ₹10
+    (50,  2000),   # 20–50 MB → ₹20
+    (200, 4900),   # 50–200 MB → ₹49
+]
+
+def get_price(size_mb: float) -> int | None:
+    """Returns price in paise for files above free limit, or None if free."""
+    if size_mb <= MAX_FREE_MB:
+        return None
+    for limit_mb, price_paise in PAID_TIERS:
+        if size_mb <= limit_mb:
+            return price_paise
+    return PAID_TIERS[-1][1]  # largest tier price for anything bigger
 
 
 def clean_markdown(md: str) -> str:
@@ -131,7 +145,7 @@ def convert_pdf(data: bytes) -> str:
 
 
 @app.post("/convert")
-async def convert(file: UploadFile = File(...)):
+async def convert(file: UploadFile = File(...), payment_id: str = ""):
     if not file.filename:
         raise HTTPException(400, "No file provided")
 
@@ -141,9 +155,16 @@ async def convert(file: UploadFile = File(...)):
 
     data = await file.read()
     size_mb = len(data) / (1024 * 1024)
+    price = get_price(size_mb)
 
-    if len(data) > MAX_FREE_BYTES:
-        raise HTTPException(413, f"File too large ({size_mb:.1f} MB). Free limit is {MAX_FREE_MB} MB.")
+    # File needs payment but no payment_id provided
+    if price is not None and not payment_id:
+        raise HTTPException(402, {
+            "message": f"File is {size_mb:.1f} MB — payment required",
+            "size_mb": round(size_mb, 2),
+            "price_paise": price,
+            "price_inr": price // 100,
+        })
 
     try:
         if ext == 'pdf':
@@ -153,29 +174,32 @@ async def convert(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(500, f"Conversion failed: {str(e)}")
 
-    word_count = len(markdown.split())
-    char_count = len(markdown)
-
     return JSONResponse({
         "markdown": markdown,
         "filename": file.filename,
         "size_mb": round(size_mb, 2),
-        "word_count": word_count,
-        "char_count": char_count,
+        "word_count": len(markdown.split()),
+        "char_count": len(markdown),
     })
 
 
+class OrderRequest(BaseModel):
+    size_mb: float
+
 @app.post("/create-order")
-def create_order():
+def create_order(body: OrderRequest):
     if not RZP_KEY_ID:
         raise HTTPException(500, "Payment not configured")
+    price = get_price(body.size_mb)
+    if price is None:
+        raise HTTPException(400, "File is free, no payment needed")
     client = razorpay.Client(auth=(RZP_KEY_ID, RZP_KEY_SECRET))
     order = client.order.create({
-        "amount": PRO_PRICE_PAISE,
+        "amount": price,
         "currency": "INR",
         "payment_capture": 1,
     })
-    return JSONResponse({"order_id": order["id"], "amount": PRO_PRICE_PAISE, "key_id": RZP_KEY_ID})
+    return JSONResponse({"order_id": order["id"], "amount": price, "key_id": RZP_KEY_ID})
 
 
 class VerifyRequest(BaseModel):

@@ -1,96 +1,57 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { Upload, Copy, Check, FileText, Zap, AlertCircle, Download, Crown } from "lucide-react";
+import { Upload, Copy, Check, FileText, Zap, AlertCircle, Download } from "lucide-react";
 
 const API = "https://doctomd-production.up.railway.app";
 const FREE_LIMIT_MB = 5;
-const PRO_LIMIT_MB = 50;
 
-type Status = "idle" | "uploading" | "done" | "error";
+// Must match backend PAID_TIERS
+const PRICE_TIERS = [
+  { maxMb: 20,  priceInr: 10,  label: "5–20 MB" },
+  { maxMb: 50,  priceInr: 20,  label: "20–50 MB" },
+  { maxMb: 200, priceInr: 49,  label: "50–200 MB" },
+];
+
+function getPriceForSize(mb: number): { priceInr: number; label: string } | null {
+  if (mb <= FREE_LIMIT_MB) return null;
+  return PRICE_TIERS.find(t => mb <= t.maxMb) ?? PRICE_TIERS[PRICE_TIERS.length - 1];
+}
+
+type Status = "idle" | "pay_required" | "paying" | "uploading" | "done" | "error";
 
 declare global {
   interface Window { Razorpay: new (opts: unknown) => { open: () => void }; }
 }
 
 export default function Home() {
-  const [status, setStatus] = useState<Status>("idle");
+  const [status, setStatus]     = useState<Status>("idle");
   const [markdown, setMarkdown] = useState("");
-  const [error, setError] = useState("");
-  const [stats, setStats] = useState({ size_mb: 0, word_count: 0, char_count: 0, filename: "" });
-  const [copied, setCopied] = useState(false);
+  const [error, setError]       = useState("");
+  const [stats, setStats]       = useState({ size_mb: 0, word_count: 0, char_count: 0, filename: "" });
+  const [copied, setCopied]     = useState(false);
   const [dragging, setDragging] = useState(false);
-  const [isPro, setIsPro] = useState(false);
-  const [paying, setPaying] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [pendingPrice, setPendingPrice] = useState<{ priceInr: number; label: string } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    // Load Razorpay script
     const s = document.createElement("script");
     s.src = "https://checkout.razorpay.com/v1/checkout.js";
     document.body.appendChild(s);
-    // Restore pro from localStorage
-    const stored = localStorage.getItem("doctomd_pro");
-    if (stored) setIsPro(true);
   }, []);
 
-  const handleUpgradePro = async () => {
-    setPaying(true);
-    try {
-      const res = await fetch(`${API}/create-order`, { method: "POST" });
-      const order = await res.json();
-      const rzp = new window.Razorpay({
-        key: order.key_id,
-        amount: order.amount,
-        currency: "INR",
-        name: "DocToMD Pro",
-        description: "Unlimited conversions, up to 50 MB",
-        order_id: order.order_id,
-        handler: async (response: { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string }) => {
-          const verify = await fetch(`${API}/verify-payment`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(response),
-          });
-          const result = await verify.json();
-          if (result.pro) {
-            setIsPro(true);
-            localStorage.setItem("doctomd_pro", result.payment_id);
-          }
-        },
-        theme: { color: "#facc15" },
-      });
-      rzp.open();
-    } catch {
-      alert("Payment failed to load. Try again.");
-    } finally {
-      setPaying(false);
-    }
-  };
-
-  const convert = useCallback(async (file: File) => {
-    const sizeMb = file.size / (1024 * 1024);
-    const limit = isPro ? PRO_LIMIT_MB : FREE_LIMIT_MB;
-    if (sizeMb > limit) {
-      setError(isPro
-        ? `File is ${sizeMb.toFixed(1)} MB — Pro limit is ${PRO_LIMIT_MB} MB.`
-        : `File is ${sizeMb.toFixed(1)} MB — free limit is ${FREE_LIMIT_MB} MB. Upgrade to Pro for up to 50 MB.`
-      );
-      setStatus("error");
-      return;
-    }
-
+  const doConvert = useCallback(async (file: File, paymentId = "") => {
     setStatus("uploading");
-    setError("");
     setMarkdown("");
-
     const form = new FormData();
     form.append("file", file);
+    if (paymentId) form.append("payment_id", paymentId);
 
     try {
       const res = await fetch(`${API}/convert`, { method: "POST", body: form });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.detail || "Conversion failed");
+      if (!res.ok) throw new Error(json.detail?.message || json.detail || "Conversion failed");
       setMarkdown(json.markdown);
       setStats({ size_mb: json.size_mb, word_count: json.word_count, char_count: json.char_count, filename: json.filename });
       setStatus("done");
@@ -100,16 +61,75 @@ export default function Home() {
     }
   }, []);
 
+  const handleFile = useCallback((file: File) => {
+    const sizeMb = file.size / (1024 * 1024);
+    if (sizeMb > 200) {
+      setError("Maximum file size is 200 MB.");
+      setStatus("error");
+      return;
+    }
+    const tier = getPriceForSize(sizeMb);
+    if (tier) {
+      setPendingFile(file);
+      setPendingPrice(tier);
+      setStatus("pay_required");
+    } else {
+      doConvert(file);
+    }
+  }, [doConvert]);
+
+  const handlePay = async () => {
+    if (!pendingFile || !pendingPrice) return;
+    setStatus("paying");
+    try {
+      const res = await fetch(`${API}/create-order`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ size_mb: pendingFile.size / (1024 * 1024) }),
+      });
+      const order = await res.json();
+      const rzp = new window.Razorpay({
+        key: order.key_id,
+        amount: order.amount,
+        currency: "INR",
+        name: "DocToMD",
+        description: `Convert ${pendingFile.name}`,
+        order_id: order.order_id,
+        handler: async (response: { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string }) => {
+          // Verify then convert
+          const verify = await fetch(`${API}/verify-payment`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(response),
+          });
+          const result = await verify.json();
+          if (result.pro) {
+            doConvert(pendingFile, response.razorpay_payment_id);
+          } else {
+            setError("Payment verification failed. Contact support.");
+            setStatus("error");
+          }
+        },
+        modal: { ondismiss: () => setStatus("pay_required") },
+        theme: { color: "#facc15" },
+      });
+      rzp.open();
+    } catch {
+      setError("Could not load payment. Try again.");
+      setStatus("error");
+    }
+  };
+
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setDragging(false);
     const file = e.dataTransfer.files[0];
-    if (file) convert(file);
-  }, [convert, isPro]);
+    if (file) handleFile(file);
+  }, [handleFile]);
 
   const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) convert(file);
+    if (file) handleFile(file);
   };
 
   const copyMd = async () => {
@@ -132,8 +152,12 @@ export default function Home() {
     setStatus("idle");
     setMarkdown("");
     setError("");
+    setPendingFile(null);
+    setPendingPrice(null);
     if (inputRef.current) inputRef.current.value = "";
   };
+
+  const showUpload = status === "idle" || status === "error";
 
   return (
     <main className="min-h-screen bg-[#0f0f0f] text-white font-sans">
@@ -142,40 +166,30 @@ export default function Home() {
         <div className="flex items-center gap-2">
           <Zap size={20} className="text-yellow-400" />
           <span className="font-bold text-lg tracking-tight">DocToMD</span>
-          <span className="text-xs bg-white/10 px-2 py-0.5 rounded-full text-white/50 ml-1">free</span>
         </div>
-        {isPro ? (
-          <span className="flex items-center gap-1.5 text-sm text-yellow-400 font-medium">
-            <Crown size={14} /> Pro
-          </span>
-        ) : (
-          <button
-            onClick={handleUpgradePro}
-            disabled={paying}
-            className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg bg-yellow-400 text-black font-medium hover:bg-yellow-300 transition-colors disabled:opacity-50"
-          >
-            <Crown size={14} />
-            {paying ? "Loading…" : "Upgrade ₹299/mo"}
-          </button>
-        )}
+        <div className="flex items-center gap-3 text-xs text-white/40">
+          <span>Under 5 MB — Free</span>
+          <span>·</span>
+          <span>5–20 MB — ₹10</span>
+          <span>·</span>
+          <span>20–50 MB — ₹20</span>
+          <span>·</span>
+          <span>50–200 MB — ₹49</span>
+        </div>
       </header>
 
       <div className="max-w-5xl mx-auto px-6 py-12">
         {/* Hero */}
         <div className="text-center mb-10">
           <h1 className="text-4xl font-bold mb-3 tracking-tight">PDF & Word → Markdown</h1>
-          <p className="text-white/50 text-lg">
-            Convert documents for Claude, ChatGPT, Cursor, Obsidian. Free up to {FREE_LIMIT_MB} MB.
-          </p>
+          <p className="text-white/50 text-lg">Convert documents for Claude, ChatGPT, Cursor, Obsidian. Under 5 MB is always free.</p>
         </div>
 
         {/* Upload Zone */}
-        {(status === "idle" || status === "error") && (
+        {showUpload && (
           <div
             className={`border-2 border-dashed rounded-2xl p-16 text-center cursor-pointer transition-all ${
-              dragging
-                ? "border-yellow-400 bg-yellow-400/5"
-                : "border-white/20 hover:border-white/40 hover:bg-white/[0.03]"
+              dragging ? "border-yellow-400 bg-yellow-400/5" : "border-white/20 hover:border-white/40 hover:bg-white/[0.03]"
             }`}
             onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
             onDragLeave={() => setDragging(false)}
@@ -185,7 +199,7 @@ export default function Home() {
             <input ref={inputRef} type="file" accept=".pdf,.docx,.doc" className="hidden" onChange={onFileChange} />
             <Upload size={40} className="mx-auto mb-4 text-white/30" />
             <p className="text-xl font-medium mb-2">Drop your file here</p>
-            <p className="text-white/40 text-sm">PDF, DOCX, DOC · Max {isPro ? `${PRO_LIMIT_MB} MB (Pro)` : `${FREE_LIMIT_MB} MB free`}</p>
+            <p className="text-white/40 text-sm">PDF, DOCX, DOC · Up to 200 MB</p>
             {status === "error" && (
               <div className="mt-6 flex items-center gap-2 justify-center text-red-400 text-sm">
                 <AlertCircle size={16} />
@@ -195,7 +209,34 @@ export default function Home() {
           </div>
         )}
 
-        {/* Loading */}
+        {/* Payment required */}
+        {(status === "pay_required" || status === "paying") && pendingFile && pendingPrice && (
+          <div className="border border-white/10 rounded-2xl p-10 text-center space-y-6">
+            <div className="text-5xl">💳</div>
+            <div>
+              <p className="text-xl font-semibold mb-1">{pendingFile.name}</p>
+              <p className="text-white/50 text-sm">{(pendingFile.size / (1024 * 1024)).toFixed(1)} MB — {pendingPrice.label} tier</p>
+            </div>
+            <div className="bg-yellow-400/10 border border-yellow-400/30 rounded-xl px-6 py-4 inline-block">
+              <p className="text-3xl font-bold text-yellow-400">₹{pendingPrice.priceInr}</p>
+              <p className="text-white/50 text-sm mt-1">one-time · this file only</p>
+            </div>
+            <div className="flex gap-3 justify-center">
+              <button
+                onClick={handlePay}
+                disabled={status === "paying"}
+                className="px-8 py-3 bg-yellow-400 text-black font-semibold rounded-xl hover:bg-yellow-300 transition-colors disabled:opacity-50"
+              >
+                {status === "paying" ? "Opening payment…" : `Pay ₹${pendingPrice.priceInr} & Convert`}
+              </button>
+              <button onClick={reset} className="px-6 py-3 bg-white/10 rounded-xl hover:bg-white/20 transition-colors text-white/60">
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Converting */}
         {status === "uploading" && (
           <div className="border-2 border-dashed border-yellow-400/40 rounded-2xl p-16 text-center">
             <div className="w-8 h-8 border-2 border-yellow-400 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
@@ -206,7 +247,6 @@ export default function Home() {
         {/* Result */}
         {status === "done" && (
           <div className="space-y-4">
-            {/* Stats bar */}
             <div className="flex items-center justify-between bg-white/5 rounded-xl px-5 py-3 flex-wrap gap-3">
               <div className="flex items-center gap-2 text-sm text-white/60">
                 <FileText size={14} />
@@ -219,38 +259,47 @@ export default function Home() {
                 <span>{stats.char_count.toLocaleString()} chars</span>
               </div>
               <div className="flex gap-2">
-                <button
-                  onClick={downloadMd}
-                  className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 transition-colors"
-                >
-                  <Download size={14} />
-                  .md
+                <button onClick={downloadMd} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 transition-colors">
+                  <Download size={14} /> .md
                 </button>
-                <button
-                  onClick={copyMd}
-                  className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg bg-yellow-400 text-black font-medium hover:bg-yellow-300 transition-colors"
-                >
+                <button onClick={copyMd} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg bg-yellow-400 text-black font-medium hover:bg-yellow-300 transition-colors">
                   {copied ? <Check size={14} /> : <Copy size={14} />}
                   {copied ? "Copied!" : "Copy MD"}
                 </button>
-                <button
-                  onClick={reset}
-                  className="text-sm px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 transition-colors text-white/60"
-                >
+                <button onClick={reset} className="text-sm px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 transition-colors text-white/60">
                   New file
                 </button>
               </div>
             </div>
-
-            {/* Markdown output */}
             <pre className="bg-[#1a1a1a] border border-white/10 rounded-2xl p-6 text-sm text-white/80 overflow-auto max-h-[60vh] whitespace-pre-wrap font-mono leading-relaxed">
               {markdown}
             </pre>
           </div>
         )}
 
+        {/* Pricing table */}
+        {(status === "idle" || status === "error") && (
+          <div className="mt-16">
+            <p className="text-center text-white/30 text-sm mb-6">Pricing</p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {[
+                { range: "Under 5 MB", price: "Free", sub: "Always free" },
+                { range: "5 – 20 MB",  price: "₹10",  sub: "per file" },
+                { range: "20 – 50 MB", price: "₹20",  sub: "per file" },
+                { range: "50 – 200 MB",price: "₹49",  sub: "per file" },
+              ].map(t => (
+                <div key={t.range} className="bg-white/[0.03] border border-white/[0.08] rounded-xl p-4 text-center">
+                  <p className="text-white/40 text-xs mb-2">{t.range}</p>
+                  <p className="text-xl font-bold text-yellow-400">{t.price}</p>
+                  <p className="text-white/30 text-xs mt-1">{t.sub}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Features */}
-        <div className="mt-16 grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm text-white/50">
+        <div className="mt-8 grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm text-white/50">
           {[
             { icon: "⚡", title: "Instant", desc: "Converts in seconds, no signup needed" },
             { icon: "🔒", title: "Private", desc: "Files not stored — processed and discarded" },
