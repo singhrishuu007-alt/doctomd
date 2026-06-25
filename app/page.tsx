@@ -1,12 +1,17 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
-import { Upload, Copy, Check, FileText, Zap, AlertCircle, Download } from "lucide-react";
+import { useState, useCallback, useRef, useEffect } from "react";
+import { Upload, Copy, Check, FileText, Zap, AlertCircle, Download, Crown } from "lucide-react";
 
 const API = "https://doctomd-production.up.railway.app";
 const FREE_LIMIT_MB = 5;
+const PRO_LIMIT_MB = 50;
 
 type Status = "idle" | "uploading" | "done" | "error";
+
+declare global {
+  interface Window { Razorpay: new (opts: unknown) => { open: () => void }; }
+}
 
 export default function Home() {
   const [status, setStatus] = useState<Status>("idle");
@@ -15,12 +20,62 @@ export default function Home() {
   const [stats, setStats] = useState({ size_mb: 0, word_count: 0, char_count: 0, filename: "" });
   const [copied, setCopied] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [isPro, setIsPro] = useState(false);
+  const [paying, setPaying] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    // Load Razorpay script
+    const s = document.createElement("script");
+    s.src = "https://checkout.razorpay.com/v1/checkout.js";
+    document.body.appendChild(s);
+    // Restore pro from localStorage
+    const stored = localStorage.getItem("doctomd_pro");
+    if (stored) setIsPro(true);
+  }, []);
+
+  const handleUpgradePro = async () => {
+    setPaying(true);
+    try {
+      const res = await fetch(`${API}/create-order`, { method: "POST" });
+      const order = await res.json();
+      const rzp = new window.Razorpay({
+        key: order.key_id,
+        amount: order.amount,
+        currency: "INR",
+        name: "DocToMD Pro",
+        description: "Unlimited conversions, up to 50 MB",
+        order_id: order.order_id,
+        handler: async (response: { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string }) => {
+          const verify = await fetch(`${API}/verify-payment`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(response),
+          });
+          const result = await verify.json();
+          if (result.pro) {
+            setIsPro(true);
+            localStorage.setItem("doctomd_pro", result.payment_id);
+          }
+        },
+        theme: { color: "#facc15" },
+      });
+      rzp.open();
+    } catch {
+      alert("Payment failed to load. Try again.");
+    } finally {
+      setPaying(false);
+    }
+  };
 
   const convert = useCallback(async (file: File) => {
     const sizeMb = file.size / (1024 * 1024);
-    if (sizeMb > FREE_LIMIT_MB) {
-      setError(`File is ${sizeMb.toFixed(1)} MB — free limit is ${FREE_LIMIT_MB} MB. Upgrade to Pro for unlimited.`);
+    const limit = isPro ? PRO_LIMIT_MB : FREE_LIMIT_MB;
+    if (sizeMb > limit) {
+      setError(isPro
+        ? `File is ${sizeMb.toFixed(1)} MB — Pro limit is ${PRO_LIMIT_MB} MB.`
+        : `File is ${sizeMb.toFixed(1)} MB — free limit is ${FREE_LIMIT_MB} MB. Upgrade to Pro for up to 50 MB.`
+      );
       setStatus("error");
       return;
     }
@@ -50,7 +105,7 @@ export default function Home() {
     setDragging(false);
     const file = e.dataTransfer.files[0];
     if (file) convert(file);
-  }, [convert]);
+  }, [convert, isPro]);
 
   const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -89,7 +144,20 @@ export default function Home() {
           <span className="font-bold text-lg tracking-tight">DocToMD</span>
           <span className="text-xs bg-white/10 px-2 py-0.5 rounded-full text-white/50 ml-1">free</span>
         </div>
-        <a href="#" className="text-sm text-white/40 hover:text-white transition-colors">Pro →</a>
+        {isPro ? (
+          <span className="flex items-center gap-1.5 text-sm text-yellow-400 font-medium">
+            <Crown size={14} /> Pro
+          </span>
+        ) : (
+          <button
+            onClick={handleUpgradePro}
+            disabled={paying}
+            className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg bg-yellow-400 text-black font-medium hover:bg-yellow-300 transition-colors disabled:opacity-50"
+          >
+            <Crown size={14} />
+            {paying ? "Loading…" : "Upgrade ₹299/mo"}
+          </button>
+        )}
       </header>
 
       <div className="max-w-5xl mx-auto px-6 py-12">
@@ -117,7 +185,7 @@ export default function Home() {
             <input ref={inputRef} type="file" accept=".pdf,.docx,.doc" className="hidden" onChange={onFileChange} />
             <Upload size={40} className="mx-auto mb-4 text-white/30" />
             <p className="text-xl font-medium mb-2">Drop your file here</p>
-            <p className="text-white/40 text-sm">PDF, DOCX, DOC · Max {FREE_LIMIT_MB} MB free</p>
+            <p className="text-white/40 text-sm">PDF, DOCX, DOC · Max {isPro ? `${PRO_LIMIT_MB} MB (Pro)` : `${FREE_LIMIT_MB} MB free`}</p>
             {status === "error" && (
               <div className="mt-6 flex items-center gap-2 justify-center text-red-400 text-sm">
                 <AlertCircle size={16} />

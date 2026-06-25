@@ -1,8 +1,13 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 import mammoth
 import pdfplumber
+import razorpay
+import hmac
+import hashlib
+import os
 import io
 import re
 
@@ -10,10 +15,14 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://*.vercel.app", "https://doctomd.vercel.app"],
-    allow_methods=["POST"],
+    allow_origins=["http://localhost:3000", "https://*.vercel.app", "https://doctomd-orpin.vercel.app"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
+
+RZP_KEY_ID     = os.environ.get("RZP_KEY_ID", "")
+RZP_KEY_SECRET = os.environ.get("RZP_KEY_SECRET", "")
+PRO_PRICE_PAISE = 29900  # ₹299
 
 MAX_FREE_MB = 5
 MAX_FREE_BYTES = MAX_FREE_MB * 1024 * 1024
@@ -154,6 +163,34 @@ async def convert(file: UploadFile = File(...)):
         "word_count": word_count,
         "char_count": char_count,
     })
+
+
+@app.post("/create-order")
+def create_order():
+    if not RZP_KEY_ID:
+        raise HTTPException(500, "Payment not configured")
+    client = razorpay.Client(auth=(RZP_KEY_ID, RZP_KEY_SECRET))
+    order = client.order.create({
+        "amount": PRO_PRICE_PAISE,
+        "currency": "INR",
+        "payment_capture": 1,
+    })
+    return JSONResponse({"order_id": order["id"], "amount": PRO_PRICE_PAISE, "key_id": RZP_KEY_ID})
+
+
+class VerifyRequest(BaseModel):
+    razorpay_order_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
+
+
+@app.post("/verify-payment")
+def verify_payment(body: VerifyRequest):
+    msg = f"{body.razorpay_order_id}|{body.razorpay_payment_id}"
+    expected = hmac.new(RZP_KEY_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
+    if expected != body.razorpay_signature:
+        raise HTTPException(400, "Payment verification failed")
+    return JSONResponse({"pro": True, "payment_id": body.razorpay_payment_id})
 
 
 @app.get("/health")
