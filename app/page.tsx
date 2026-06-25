@@ -3,7 +3,7 @@
 import { useState, useCallback, useRef } from "react";
 import { Upload, Copy, Check, FileText, Zap, AlertCircle, Download } from "lucide-react";
 
-const API = "http://localhost:8000";
+const API = "https://doctomd-production.up.railway.app";
 const FREE_LIMIT_MB = 5;
 
 type Status = "idle" | "uploading" | "done" | "error";
