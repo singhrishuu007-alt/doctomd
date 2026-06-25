@@ -2,9 +2,12 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { Upload, Copy, Check, FileText, Zap, AlertCircle, Download } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 
 const API = "https://doctomd-production.up.railway.app";
 const FREE_LIMIT_MB = 5;
+const UPI_ID = "rishabhs1898@okicici";
+const UPI_NAME = "DocToMD";
 
 // Must match backend PAID_TIERS
 const PRICE_TIERS = [
@@ -35,6 +38,9 @@ export default function Home() {
   const [pendingPrice, setPendingPrice] = useState<{ priceInr: number; label: string } | null>(null);
   const [unlimitedToken, setUnlimitedToken] = useState("");
   const [buyingUnlimited, setBuyingUnlimited] = useState(false);
+  const [showUnlimitedQR, setShowUnlimitedQR] = useState(false);
+  const [utr, setUtr] = useState("");
+  const [utrError, setUtrError] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -165,6 +171,28 @@ export default function Home() {
     }
   };
 
+  const handleUpiPaid = useCallback(() => {
+    if (utr.trim().length < 10) {
+      setUtrError("Enter a valid UTR number (12 digits from your UPI app)");
+      return;
+    }
+    setUtrError("");
+    if (pendingFile) doConvert(pendingFile, utr.trim());
+  }, [utr, pendingFile, doConvert]);
+
+  const handleUnlimitedUpiPaid = useCallback(() => {
+    if (utr.trim().length < 10) {
+      setUtrError("Enter a valid UTR number (12 digits from your UPI app)");
+      return;
+    }
+    setUtrError("");
+    const token = `upi_${utr.trim()}`;
+    setUnlimitedToken(token);
+    localStorage.setItem("doctomd_unlimited", token);
+    setStatus("idle");
+    setUtr("");
+  }, [utr]);
+
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setDragging(false);
@@ -218,11 +246,10 @@ export default function Home() {
           </span>
         ) : (
           <button
-            onClick={handleBuyUnlimited}
-            disabled={buyingUnlimited}
-            className="text-sm px-4 py-1.5 rounded-lg bg-yellow-400 text-black font-semibold hover:bg-yellow-300 transition-colors disabled:opacity-50"
+            onClick={() => { setShowUnlimitedQR(true); setUtr(""); setUtrError(""); }}
+            className="text-sm px-4 py-1.5 rounded-lg bg-yellow-400 text-black font-semibold hover:bg-yellow-300 transition-colors"
           >
-            {buyingUnlimited ? "Loading…" : "₹499 Unlimited"}
+            ₹499 Unlimited
           </button>
         )}
       </header>
@@ -258,27 +285,49 @@ export default function Home() {
           </div>
         )}
 
-        {/* Payment required */}
+        {/* UPI Payment screen — per file */}
         {(status === "pay_required" || status === "paying") && pendingFile && pendingPrice && (
-          <div className="border border-white/10 rounded-2xl p-10 text-center space-y-6">
-            <div className="text-5xl">💳</div>
-            <div>
-              <p className="text-xl font-semibold mb-1">{pendingFile.name}</p>
-              <p className="text-white/50 text-sm">{(pendingFile.size / (1024 * 1024)).toFixed(1)} MB — {pendingPrice.label} tier</p>
+          <div className="border border-white/10 rounded-2xl p-8 max-w-md mx-auto space-y-6">
+            <div className="text-center">
+              <p className="text-lg font-semibold mb-1">{pendingFile.name}</p>
+              <p className="text-white/40 text-sm">{(pendingFile.size / (1024 * 1024)).toFixed(1)} MB</p>
             </div>
-            <div className="bg-yellow-400/10 border border-yellow-400/30 rounded-xl px-6 py-4 inline-block">
-              <p className="text-3xl font-bold text-yellow-400">₹{pendingPrice.priceInr}</p>
-              <p className="text-white/50 text-sm mt-1">one-time · this file only</p>
+
+            {/* QR Code */}
+            <div className="flex flex-col items-center gap-3">
+              <div className="bg-white p-4 rounded-2xl">
+                <QRCodeSVG
+                  value={`upi://pay?pa=${UPI_ID}&pn=${encodeURIComponent(UPI_NAME)}&am=${pendingPrice.priceInr}&cu=INR&tn=${encodeURIComponent(`DocToMD - ${pendingFile.name}`)}`}
+                  size={180}
+                />
+              </div>
+              <p className="text-2xl font-bold text-yellow-400">₹{pendingPrice.priceInr}</p>
+              <p className="text-white/40 text-sm">Scan with GPay · PhonePe · Paytm · any UPI app</p>
+              <p className="text-white/30 text-xs">{UPI_ID}</p>
             </div>
-            <div className="flex gap-3 justify-center">
+
+            {/* UTR input */}
+            <div className="space-y-2">
+              <label className="text-sm text-white/50">After paying, enter UTR / Transaction ID</label>
+              <input
+                type="text"
+                value={utr}
+                onChange={e => { setUtr(e.target.value); setUtrError(""); }}
+                placeholder="e.g. 123456789012"
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-yellow-400/50"
+              />
+              {utrError && <p className="text-red-400 text-xs">{utrError}</p>}
+              <p className="text-white/25 text-xs">Find it in GPay → transaction details → UTR number</p>
+            </div>
+
+            <div className="flex gap-3">
               <button
-                onClick={handlePay}
-                disabled={status === "paying"}
-                className="px-8 py-3 bg-yellow-400 text-black font-semibold rounded-xl hover:bg-yellow-300 transition-colors disabled:opacity-50"
+                onClick={handleUpiPaid}
+                className="flex-1 py-3 bg-yellow-400 text-black font-semibold rounded-xl hover:bg-yellow-300 transition-colors"
               >
-                {status === "paying" ? "Opening payment…" : `Pay ₹${pendingPrice.priceInr} & Convert`}
+                I've Paid — Convert Now
               </button>
-              <button onClick={reset} className="px-6 py-3 bg-white/10 rounded-xl hover:bg-white/20 transition-colors text-white/60">
+              <button onClick={reset} className="px-5 py-3 bg-white/10 rounded-xl hover:bg-white/20 transition-colors text-white/50">
                 Cancel
               </button>
             </div>
@@ -363,6 +412,56 @@ export default function Home() {
           ))}
         </div>
       </div>
+      {/* ₹499 Unlimited QR Modal */}
+      {showUnlimitedQR && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 px-4">
+          <div className="bg-[#1a1a1a] border border-white/10 rounded-2xl p-8 max-w-sm w-full space-y-5">
+            <div className="text-center">
+              <p className="text-xl font-bold mb-1">₹499 Unlimited</p>
+              <p className="text-white/40 text-sm">Any file size · unlimited conversions · forever</p>
+            </div>
+
+            <div className="flex flex-col items-center gap-2">
+              <div className="bg-white p-4 rounded-2xl">
+                <QRCodeSVG
+                  value={`upi://pay?pa=${UPI_ID}&pn=${encodeURIComponent(UPI_NAME)}&am=499&cu=INR&tn=${encodeURIComponent("DocToMD Unlimited")}`}
+                  size={180}
+                />
+              </div>
+              <p className="text-2xl font-bold text-yellow-400">₹499</p>
+              <p className="text-white/40 text-sm">Scan with GPay · PhonePe · Paytm</p>
+              <p className="text-white/30 text-xs">{UPI_ID}</p>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm text-white/50">Enter UTR / Transaction ID after paying</label>
+              <input
+                type="text"
+                value={utr}
+                onChange={e => { setUtr(e.target.value); setUtrError(""); }}
+                placeholder="e.g. 123456789012"
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-yellow-400/50"
+              />
+              {utrError && <p className="text-red-400 text-xs">{utrError}</p>}
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => { handleUnlimitedUpiPaid(); setShowUnlimitedQR(false); }}
+                className="flex-1 py-3 bg-yellow-400 text-black font-semibold rounded-xl hover:bg-yellow-300 transition-colors"
+              >
+                Activate Unlimited
+              </button>
+              <button
+                onClick={() => { setShowUnlimitedQR(false); setUtr(""); setUtrError(""); }}
+                className="px-5 py-3 bg-white/10 rounded-xl hover:bg-white/20 transition-colors text-white/50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
