@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -150,7 +150,7 @@ def convert_pdf(data: bytes) -> str:
 
 
 @app.post("/convert")
-async def convert(file: UploadFile = File(...), payment_id: str = "", unlimited_token: str = ""):
+async def convert(file: UploadFile = File(...), payment_id: str = Form(""), unlimited_token: str = Form("")):
     if not file.filename:
         raise HTTPException(400, "No file provided")
 
