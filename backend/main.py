@@ -10,6 +10,7 @@ import hashlib
 import os
 import io
 import re
+import gc
 
 app = FastAPI()
 
@@ -129,7 +130,9 @@ def extract_page_text(page) -> str:
 
 def convert_pdf(data: bytes) -> str:
     lines = []
-    with pdfplumber.open(io.BytesIO(data)) as pdf:
+    buf = io.BytesIO(data)
+    del data  # free original bytes immediately
+    with pdfplumber.open(buf) as pdf:
         for page in pdf.pages:
             text = extract_page_text(page)
             if text:
@@ -139,7 +142,6 @@ def convert_pdf(data: bytes) -> str:
                 for table in page.extract_tables():
                     if not table:
                         continue
-                    # Skip single-cell tables (decorative boxes, not real data tables)
                     total_cells = sum(len(row) for row in table)
                     if total_cells <= 2:
                         continue
@@ -150,6 +152,8 @@ def convert_pdf(data: bytes) -> str:
                     for row in rows:
                         lines.append('| ' + ' | '.join(str(c or '') for c in row) + ' |')
                     lines.append('')
+            page.flush_cache()  # release page image data after each page
+            gc.collect()
     return clean_markdown('\n\n'.join(lines))
 
 
@@ -241,6 +245,3 @@ def check_unlimited(payment_id: str):
     return JSONResponse({"valid": payment_id in unlimited_tokens})
 
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
