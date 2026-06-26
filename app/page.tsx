@@ -54,6 +54,8 @@ export default function Home() {
     } else if (saved) {
       localStorage.removeItem("doctomd_unlimited");
     }
+    // Wake up Render free tier in background
+    fetch(`${API}/health`).catch(() => {});
   }, []);
 
   const doConvert = useCallback(async (file: File, paymentId = "", token = "") => {

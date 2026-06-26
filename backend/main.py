@@ -26,6 +26,10 @@ RZP_KEY_SECRET = os.environ.get("RZP_KEY_SECRET", "")
 MAX_FREE_MB = 5
 UNLIMITED_PRICE_PAISE = 49900  # ₹499
 
+@app.get("/health")
+def health():
+    return {"ok": True}
+
 # Pay-per-file tiers (size in MB → price in paise)
 PAID_TIERS = [
     (20,  1000),   # 5–20 MB  → ₹10
