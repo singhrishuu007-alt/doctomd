@@ -4,7 +4,7 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import { Upload, Copy, Check, FileText, Zap, AlertCircle, Download } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 
-const API = "https://doctomd-production.up.railway.app";
+const API = "https://doctomd-sacp.onrender.com";
 const FREE_LIMIT_MB = 5;
 const UPI_ID = "rishabhs1898@okicici";
 const UPI_NAME = "DocToMD";
